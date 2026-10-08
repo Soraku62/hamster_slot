@@ -279,3 +279,76 @@ class Swarm extends StatelessWidget {
     );
   }
 }
+
+/// Light behind the charging digits: a breathing glow, a horizontal lens
+/// flare streak and thin rotating rays. [color] null = rainbow.
+class ChargeLightPainter extends CustomPainter {
+  final Offset c;
+  final double pulse, charge, fade;
+  final Color? color;
+  ChargeLightPainter(this.c, this.pulse, this.charge, this.fade, this.color);
+
+  @override
+  void paint(Canvas canvas, Size s) {
+    if (fade <= 0) return;
+    final col =
+        color ??
+        HSVColor.fromAHSV(
+          1,
+          (pulse * 360 + charge * 720) % 360,
+          0.8,
+          1,
+        ).toColor();
+    final add = Paint()..blendMode = BlendMode.plus;
+    // breathing glow
+    final r = s.width * (0.3 + 0.15 * pulse) * (1 + charge * 0.5);
+    canvas.drawCircle(
+      c,
+      r,
+      add
+        ..shader = RadialGradient(
+          colors: [
+            Colors.white.withValues(alpha: (0.1 + 0.3 * pulse) * fade),
+            col.withValues(alpha: (0.1 + 0.2 * pulse) * fade),
+            col.withValues(alpha: 0),
+          ],
+          stops: const [0, 0.35, 1],
+        ).createShader(Rect.fromCircle(center: c, radius: r)),
+    );
+    // rotating thin rays
+    final rays = Paint()
+      ..blendMode = BlendMode.plus
+      ..color = col.withValues(alpha: (0.15 + 0.3 * charge) * fade);
+    for (var i = 0; i < 24; i++) {
+      final a = i * pi / 12 + charge * 3;
+      final w = 0.015 + 0.02 * pulse;
+      canvas.drawPath(
+        Path()
+          ..moveTo(c.dx, c.dy)
+          ..lineTo(c.dx + cos(a - w) * 1500, c.dy + sin(a - w) * 1500)
+          ..lineTo(c.dx + cos(a + w) * 1500, c.dy + sin(a + w) * 1500)
+          ..close(),
+        rays,
+      );
+    }
+    // lens-flare streak across the row
+    final h = (8 + 30 * pulse) * (0.4 + charge);
+    final streak = Rect.fromCenter(center: c, width: s.width * 2, height: h);
+    canvas.drawRect(
+      streak,
+      Paint()
+        ..blendMode = BlendMode.plus
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, h * 0.4)
+        ..shader = LinearGradient(
+          colors: [
+            Colors.transparent,
+            Colors.white.withValues(alpha: 0.9 * fade),
+            Colors.transparent,
+          ],
+        ).createShader(streak),
+    );
+  }
+
+  @override
+  bool shouldRepaint(_) => true;
+}

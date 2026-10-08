@@ -161,7 +161,7 @@ class _PachiGachaState extends State<PachiGacha>
   List<int> reels = [7, 7, 7], finalReels = [7, 7, 7];
   final holds = <Hold>[];
 
-  double smashAt = -9, splitAt = -9, kachiAt = -9;
+  double smashAt = -9, splitAt = -9;
   Offset splitA = Offset.zero, splitB = Offset.zero;
 
   double get pt => clock - phaseStart;
@@ -169,15 +169,21 @@ class _PachiGachaState extends State<PachiGacha>
   bool get hasReach => finalReels[0] == finalReels[2];
   bool get winning => phase == Phase.result && win;
 
-  // Jackpot zoom: the winning digits rush toward the viewer one at a time
-  // (left → right → center), spin, then snap back into their reels.
-  static const zoomOrder = [0, 2, 1]; // reel index for each turn
-  static const zoomStart = [0.0, 0.55, 1.1];
-  static const zoomEnd = [0.55, 1.1, 1.95]; // = moment of the snap
-  static const snapDur = 0.14; // how long the "fly back" takes
+  // Jackpot zoom — all three winning digits at once:
+  //   appear  0    → 0.25s  rush toward the viewer, fanned out
+  //   charge  0.25 → 1.55s  hold: vibrate back & forth, pulse light (溜め)
+  //   release 1.55 → 1.65s  snap back into the reels in one go (バチッ)
+  static const zAppear = 0.25, zCharge = 1.55, zSnap = 1.65;
+  double hitStopUntil = -9;
 
-  /// Seconds since the last digit snapped in (negative while zooming).
-  double get celebT => winning ? pt - zoomEnd.last : -1;
+  /// 0..1 progress through the charge.
+  double get chargeP => ((pt - zAppear) / (zCharge - zAppear)).clamp(0.0, 1.0);
+
+  /// Pulse frequency of the charge (Hz): speeds up like a heartbeat.
+  double get chargeHz => 4 + 6 * chargeP;
+
+  /// Seconds since the digits snapped in (negative while zooming).
+  double get celebT => winning ? pt - zSnap : -1;
 
   /// Time base for result-screen animations (win waits for the zoom).
   double get rt => win ? celebT : pt;
@@ -528,42 +534,64 @@ class _PachiGachaState extends State<PachiGacha>
         if (pt > 3.0 || (shotLv != null && pt > 0.7)) _resolve();
       case Phase.result:
         if (win) {
-          for (var k = 0; k < 3; k++) {
-            // a giant digit appears
-            if (at(zoomStart[k])) {
-              _hit('zoom');
-              w.shock(center, Colors.amber, r: 420);
-              w.burst(center, 50, rampGold, speed: 500);
-            }
-            // カチッ: it lands in its reel
-            if (at(zoomEnd[k])) {
-              final slot = _slotPos(zoomOrder[k], w.size);
-              kachiAt = clock;
-              _hit('kachi');
-              w.shock(slot, Colors.white, r: 230);
-              w.burst(slot, 80, rampGold, speed: 750);
-              w.shards(slot, 30, rampGold, speed: 700);
+          final ds = [for (var i = 0; i < 3; i++) _floatPos(i, w.size)];
+          final gold = lv == 4 ? rampRainbow : rampGold;
+          if (at(0)) {
+            _hit('zoom');
+            for (final d in ds) {
+              w.shock(d, Colors.amber, r: 300);
+              w.burst(d, 40, gold, speed: 500);
             }
           }
-          if (at(zoomEnd.last)) {
+          if (at(zAppear)) _sfx('charge');
+          if (pt > zAppear && pt < zCharge) {
+            // gather power: sparks rush inward, faster as the charge builds
+            w.charge(
+              center,
+              w.size.shortestSide * 0.8,
+              3 + (chargeP * 7).round(),
+              gold,
+            );
+            // electricity jumping between the digits
+            if (every(0.12 - 0.07 * chargeP)) {
+              final a = rnd.nextInt(3), b = (a + 1 + rnd.nextInt(2)) % 3;
+              w.bolt(
+                ds[a],
+                ds[b],
+                color: lv == 4 ? Colors.white : const Color(0xFFFFC040),
+                life: 0.12,
+                width: 0.6 + chargeP,
+              );
+            }
+            if (every(0.06)) {
+              w.twinkle(
+                Rect.fromCenter(
+                  center: center,
+                  width: w.size.width,
+                  height: 280,
+                ),
+                2,
+                gold,
+              );
+            }
+          }
+          if (at(zCharge)) _hit('bachi'); // its attack lands on the snap
+          if (at(zSnap)) {
             _smash();
+            hitStopUntil = clock + 0.08; // freeze particles for ~5 frames
             _sfx(lv == 4 ? 'premium' : 'win');
-            w.shards(center, 160, rampGold, speed: 1200);
-            w.burst(center, 260, lv == 4 ? rampRainbow : rampGold, speed: 1200);
+            for (var i = 0; i < 3; i++) {
+              final slot = _slotPos(i, w.size);
+              w.shock(slot, Colors.white, r: 260);
+              w.burst(slot, 90, gold, speed: 800);
+              w.shards(slot, 40, rampGold, speed: 800);
+            }
+            w.shards(center, 120, rampGold, speed: 1200);
+            w.burst(center, 200, gold, speed: 1200);
             w.shock(center, Colors.white, r: 900);
             w.ringSlash(center, w.size.width * 0.5, Colors.amber);
           }
-          if (celebT < 0) {
-            // while zooming: sparkles swirl around the giant digit
-            if (every(0.05)) {
-              w.twinkle(
-                Rect.fromCircle(center: center, radius: 170),
-                2,
-                rampGold,
-              );
-            }
-            break;
-          }
+          if (celebT < 0) break;
           if (every(0.3)) {
             w.firework(
               w.at(rr(0.1, 0.9), rr(0.08, 0.5)),
@@ -602,7 +630,7 @@ class _PachiGachaState extends State<PachiGacha>
       _randomBg();
     }
 
-    w.update(dt);
+    if (clock >= hitStopUntil) w.update(dt); // ヒットストップ
     prevPt = pt;
     _autoShot();
     frameTick.value++;
@@ -620,6 +648,7 @@ class _PachiGachaState extends State<PachiGacha>
       Phase.climax => 0.05 + lv * 0.025,
       Phase.reach when lv >= 2 => 0.03,
       Phase.result when win && celebT >= 0 && celebT < 0.8 => 0.3,
+      Phase.result when win && pt > zCharge - 0.22 && celebT < 0 => 0.3,
       _ => 0.0,
     };
     return rnd.nextDouble() < p;
@@ -627,7 +656,16 @@ class _PachiGachaState extends State<PachiGacha>
 
   Color? get flash {
     if (smashAge < 0.017) return Colors.white;
-    if (clock - kachiAt < 0.034) return Colors.white.withValues(alpha: 0.55);
+    if (winning && celebT < 0 && pt > zAppear) {
+      // light pulses on each beat of the charge; strobes just before release
+      final beat = sin(2 * pi * chargeHz * (pt - zAppear));
+      if (pt > zCharge - 0.22 && rnd.nextDouble() < 0.25) {
+        return Colors.white.withValues(alpha: 0.45);
+      }
+      if (beat > 0.9) {
+        return Colors.white.withValues(alpha: 0.08 + 0.25 * chargeP);
+      }
+    }
     if (smashAge > 0.06 && smashAge < 0.11) {
       return (win && phase == Phase.result ? Colors.amber : level.color)
           .withValues(alpha: 0.7);
@@ -650,7 +688,7 @@ class _PachiGachaState extends State<PachiGacha>
 
   Offset get shake {
     var a = max(0.0, 26 * (1 - smashAge / 0.45));
-    a += max(0.0, 14 * (1 - (clock - kachiAt) / 0.25));
+    if (winning && celebT < 0 && pt > zAppear) a += 1.5 + 7 * chargeP;
     a += switch (phase) {
       Phase.climax => 5.0 + lv * 3,
       Phase.reach when lv >= 2 => 2.0,
@@ -900,10 +938,25 @@ class _PachiGachaState extends State<PachiGacha>
               level.skin,
             ),
           ),
-        if (!frozen || pt > 1.4)
+        // the world darkens as power gathers (below the FX so the
+        // electricity and imploding sparks stay bright)
+        if (winning && celebT < 0)
+          ColoredBox(
+            color: Colors.black.withValues(
+              alpha:
+                  (0.6 + 0.3 * chargeP) *
+                  (1 - ((pt - zCharge) / (zSnap - zCharge)).clamp(0.0, 1.0)),
+            ),
+            child: const SizedBox.expand(),
+          ),
+        if ((!frozen || pt > 1.4) && !(winning && celebT < 0))
           CustomPaint(painter: FxPainter(world, frameTick)),
         Align(alignment: const Alignment(0, -0.5), child: _headline()),
-        if (winning && celebT < 0) _zoomDigits(),
+        if (winning && celebT < 0) ...[
+          _zoomDigits(),
+          // during the charge the electricity crawls OVER the giant digits
+          CustomPaint(painter: FxPainter(world, frameTick)),
+        ],
         if (phase == Phase.result && rt > 0.3) _resultCard(),
         if (winning && rt > 0.9)
           Align(alignment: const Alignment(0.78, 0.62), child: _hanko()),
@@ -918,86 +971,101 @@ class _PachiGachaState extends State<PachiGacha>
   Offset _slotPos(int i, Size s) =>
       Offset(s.width / 2 + (i - 1) * 136, (s.height - 156) / 2 * 1.25 + 78);
 
-  /// The giant spinning digit of the current zoom turn.
+  /// Where digit [i] floats during the charge: a fanned row at screen center.
+  Offset _floatPos(int i, Size s) => Offset(
+    s.width / 2 + (i - 1) * s.width * 0.52,
+    s.height * 0.42 + (i == 1 ? -12 : 12),
+  );
+
+  /// Depth vibration of digit [i]: scale wobble whose speed and size grow
+  /// with the charge. Scaling up/down reads as moving toward/away from us.
+  double _vib(int i) {
+    if (pt < zAppear || pt > zCharge) return 0;
+    final amp = 0.03 + 0.12 * chargeP * chargeP;
+    return amp * sin(2 * pi * (7 + 9 * chargeP) * (pt - zAppear) + i * 2.1);
+  }
+
+  /// The three giant digits: appear → charge → snap back.
   Widget _zoomDigits() {
     return LayoutBuilder(
       builder: (context, c) {
         final size = c.biggest;
         final center = Offset(size.width / 2, size.height * 0.42);
-        final k = zoomEnd.indexWhere((e) => pt < e);
-        if (k < 0 || pt < zoomStart[k]) return const SizedBox();
-        final i = zoomOrder[k];
-        final local = pt - zoomStart[k];
-        final hold = zoomEnd[k] - zoomStart[k] - snapDur;
-        final big = k == 2 ? 4.6 : 3.8; // the last one is the biggest
-
-        double scale, ry;
-        Offset pos;
-        if (local < hold) {
-          // rush in from far away (tiny → huge, with overshoot) ...
-          scale =
-              big * Curves.easeOutBack.transform((local / 0.16).clamp(0, 1));
-          // ... while spinning fast and slowing down to face front
-          ry = pow(1 - local / hold, 2) * pi * (k == 2 ? 8 : 5);
-          pos = center;
-        } else {
-          // snap: accelerate back down to reel size and into the slot
-          final q = Curves.easeInCubic.transform((local - hold) / snapDur);
-          scale = big + (1 - big) * q;
-          ry = 0;
-          pos = Offset.lerp(center, _slotPos(i, size), q)!;
-        }
+        final appear = Curves.easeOutBack.transform((pt / zAppear).clamp(0, 1));
+        // easeInExpo: barely moves, then all at once — the "バチッ"
+        final snapQ = Curves.easeInExpo.transform(
+          ((pt - zCharge) / (zSnap - zCharge)).clamp(0, 1),
+        );
+        final charging = pt >= zAppear && pt < zCharge;
+        final pulse = 0.5 + 0.5 * sin(2 * pi * chargeHz * (pt - zAppear));
         final skin = lv == 4 ? Skin.rainbow : Skin.gold;
-        Widget digit(double dry, double opacity) => Opacity(
-          opacity: opacity,
-          child: Text3D(
-            '${finalReels[i]}',
-            size: 104,
-            skin: skin,
-            hue: (clock * 300) % 360,
-            ry: ry + dry,
-            rx: 0.15,
+        final hue = (clock * 300) % 360;
+
+        Widget digit(
+          int i,
+          double scale,
+          Offset pos,
+          double opacity,
+        ) => Positioned(
+          left: pos.dx - 150,
+          top: pos.dy - 150,
+          width: 300,
+          height: 300,
+          child: Opacity(
+            opacity: opacity,
+            child: Transform.scale(
+              scale: scale,
+              child: Text3D(
+                '${finalReels[i]}',
+                size: 104,
+                skin: skin,
+                hue: hue,
+                // side digits turn inward (fan); a full spin while appearing
+                ry: (1 - i) * 0.45 * (1 - snapQ) + (1 - appear) * pi * 2,
+                rx: 0.15 + (charging ? sin(pt * 37 + i) * 0.07 * chargeP : 0),
+                rz: charging ? sin(pt * 29 + i * 2) * 0.05 * chargeP : 0,
+              ),
+            ),
           ),
         );
-        return Stack(
-          children: [
-            // dim the world so the digit pops
-            ColoredBox(
-              color: Colors.black.withValues(
-                alpha: 0.45 * (1 - (local - hold).clamp(0, 1)),
+
+        final children = <Widget>[
+          Positioned.fill(
+            child: CustomPaint(
+              painter: ChargeLightPainter(
+                center,
+                pulse,
+                chargeP,
+                1 - snapQ,
+                lv == 4 ? null : const Color(0xFFFFC040),
               ),
-              child: const SizedBox.expand(),
             ),
-            Positioned(
-              left: pos.dx - 150,
-              top: pos.dy - 150,
-              width: 300,
-              height: 300,
-              child: Transform.scale(
-                scale: scale,
-                child: Stack(
-                  alignment: Alignment.center,
-                  children: [
-                    // halo behind the digit
-                    Container(
-                      width: 150,
-                      height: 150,
-                      decoration: const BoxDecoration(
-                        shape: BoxShape.circle,
-                        gradient: RadialGradient(
-                          colors: [Color(0xCCFFE080), Color(0x00FFA000)],
-                        ),
-                      ),
-                    ),
-                    // afterimages trailing the spin
-                    if (local < hold) ...[digit(0.5, 0.15), digit(0.25, 0.3)],
-                    digit(0, 1),
-                  ],
+          ),
+        ];
+        for (final i in [0, 2, 1]) {
+          // center digit drawn last = in front
+          final s0 = (i == 1 ? 3.3 : 2.7) * appear * (1 + _vib(i));
+          final p0 = _floatPos(i, size);
+          final slot = _slotPos(i, size);
+          // zoom-blur: fading copies left behind along the path while snapping
+          if (snapQ > 0 && snapQ < 1) {
+            for (var g = 1; g <= 4; g++) {
+              final q = (snapQ - g * 0.13).clamp(0.0, 1.0);
+              children.add(
+                digit(
+                  i,
+                  s0 + (1 - s0) * q,
+                  Offset.lerp(p0, slot, q)!,
+                  0.4 - g * 0.08,
                 ),
-              ),
-            ),
-          ],
-        );
+              );
+            }
+          }
+          children.add(
+            digit(i, s0 + (1 - s0) * snapQ, Offset.lerp(p0, slot, snapQ)!, 1),
+          );
+        }
+        return Stack(children: children);
       },
     );
   }
@@ -1279,7 +1347,7 @@ class _PachiGachaState extends State<PachiGacha>
                         phase == Phase.push) &&
                     i == 1);
             final digit = reels[i];
-            final snapAt = zoomEnd[zoomOrder.indexOf(i)];
+            const snapAt = zSnap;
             if (winning && pt < snapAt) {
               return _reelBox(const SizedBox());
             }

@@ -391,6 +391,28 @@ class FxWorld {
     }
   }
 
+  /// Implosion: sparks spawn on a ring and rush INTO [c] — the reverse of
+  /// [burst]. Reads as "gathering power" (気を溜める).
+  void charge(Offset c, double r, int n, Ramp ramp) {
+    for (var i = 0; i < n; i++) {
+      final a = rr(0, pi * 2), dist = rr(r * 0.5, r), sp = rr(500, 950);
+      final dir = Offset(cos(a), sin(a));
+      final p = c + dir * dist;
+      _add(
+        Particle(
+          PKind.spark,
+          p.dx,
+          p.dy,
+          -dir.dx * sp,
+          -dir.dy * sp,
+          life: dist / sp,
+          size: rr(1.5, 3.5),
+          ramp: ramp,
+        ),
+      );
+    }
+  }
+
   void bolt(
     Offset a,
     Offset b, {
