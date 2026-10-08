@@ -150,4 +150,18 @@ for i, x in enumerate(sub):
     if i + int(0.4 * SR) < len(b):
         b[i + int(0.4 * SR)] += x
 save("premium", b)
+# kachi: metallic click + thump, played when a digit snaps into its reel
+b = buf(0.4)
+tone(b, 0, 0.018, 2600, kind="sq", vol=0.5, rel=0.005)
+tone(b, 0.012, 0.03, 1700, kind="sq", vol=0.35, rel=0.01)
+noise(b, 0, 0.08, 0.5, 60, 0.95)
+kick(b, 0.005, 0.8)
+bell(b, 0.01, note(96), 0.15, 0.35)
+save("kachi", b)
+
+# zoom: rising whoosh as a giant digit rushes toward the viewer
+b = buf(0.5)
+tone(b, 0, 0.45, 180, 1500, "saw", 0.18, a=0.02, rel=0.15, detune=0.02)
+noise(b, 0, 0.45, 0.35, 3, 0.35)
+save("zoom", b)
 print("ok")

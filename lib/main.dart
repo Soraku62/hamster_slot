@@ -128,8 +128,12 @@ final shotLv = kIsWeb
     ? null
     : int.tryParse(Platform.environment['SHOT_LV'] ?? '');
 final shotWin = !kIsWeb && Platform.environment['SHOT_WIN'] == '1';
+// Optional SHOT_T0 / SHOT_DT / SHOT_N sample a window densely.
+double _env(String k, double d) =>
+    kIsWeb ? d : double.tryParse(Platform.environment[k] ?? '') ?? d;
 final shotTimes = [
-  for (var i = 0; i < 20; i++) 0.2 + i * (shotLv == 4 ? 0.62 : 0.5),
+  for (var i = 0; i < _env('SHOT_N', 20); i++)
+    _env('SHOT_T0', 0.2) + i * _env('SHOT_DT', shotLv == 4 ? 0.62 : 0.5),
 ];
 
 class PachiGacha extends StatefulWidget {
@@ -145,6 +149,7 @@ class _PachiGachaState extends State<PachiGacha>
   final frameTick = ValueNotifier(0);
   final shotKey = GlobalKey();
   final player = AudioPlayer();
+  final hitPlayer = AudioPlayer(); // short hits that overlap the music
   late final Ticker ticker;
 
   double clock = 0, phaseStart = 0, prevPt = -1, lastClock = 0;
@@ -156,13 +161,26 @@ class _PachiGachaState extends State<PachiGacha>
   List<int> reels = [7, 7, 7], finalReels = [7, 7, 7];
   final holds = <Hold>[];
 
-  double smashAt = -9, splitAt = -9;
+  double smashAt = -9, splitAt = -9, kachiAt = -9;
   Offset splitA = Offset.zero, splitB = Offset.zero;
 
   double get pt => clock - phaseStart;
   Level get level => levels[lv];
   bool get hasReach => finalReels[0] == finalReels[2];
   bool get winning => phase == Phase.result && win;
+
+  // Jackpot zoom: the winning digits rush toward the viewer one at a time
+  // (left → right → center), spin, then snap back into their reels.
+  static const zoomOrder = [0, 2, 1]; // reel index for each turn
+  static const zoomStart = [0.0, 0.55, 1.1];
+  static const zoomEnd = [0.55, 1.1, 1.95]; // = moment of the snap
+  static const snapDur = 0.14; // how long the "fly back" takes
+
+  /// Seconds since the last digit snapped in (negative while zooming).
+  double get celebT => winning ? pt - zoomEnd.last : -1;
+
+  /// Time base for result-screen animations (win waits for the zoom).
+  double get rt => win ? celebT : pt;
 
   // auto-shot state
   double shotStart = -1;
@@ -189,6 +207,7 @@ class _PachiGachaState extends State<PachiGacha>
   void dispose() {
     ticker.dispose();
     player.dispose();
+    hitPlayer.dispose();
     super.dispose();
   }
 
@@ -209,6 +228,11 @@ class _PachiGachaState extends State<PachiGacha>
     Phase.reach: 'reach',
     Phase.climax: 'climax',
   };
+  void _hit(String name) {
+    hitPlayer.stop();
+    hitPlayer.play(AssetSource('sfx/$name.mp3'));
+  }
+
   void _sfx(String name) {
     player.stop();
     player.play(AssetSource('sfx/$name.mp3'));
@@ -291,7 +315,7 @@ class _PachiGachaState extends State<PachiGacha>
     if (win) {
       hits++;
       _setBg(jackpotStyles, jackpotPal);
-      _sfx(lv == 4 ? 'premium' : 'win');
+      player.stop(); // the fanfare waits for the final snap
     } else {
       _setBg(levels[0].styles, losePal);
       player.stop();
@@ -504,11 +528,41 @@ class _PachiGachaState extends State<PachiGacha>
         if (pt > 3.0 || (shotLv != null && pt > 0.7)) _resolve();
       case Phase.result:
         if (win) {
-          if (at(0)) {
+          for (var k = 0; k < 3; k++) {
+            // a giant digit appears
+            if (at(zoomStart[k])) {
+              _hit('zoom');
+              w.shock(center, Colors.amber, r: 420);
+              w.burst(center, 50, rampGold, speed: 500);
+            }
+            // カチッ: it lands in its reel
+            if (at(zoomEnd[k])) {
+              final slot = _slotPos(zoomOrder[k], w.size);
+              kachiAt = clock;
+              _hit('kachi');
+              w.shock(slot, Colors.white, r: 230);
+              w.burst(slot, 80, rampGold, speed: 750);
+              w.shards(slot, 30, rampGold, speed: 700);
+            }
+          }
+          if (at(zoomEnd.last)) {
+            _smash();
+            _sfx(lv == 4 ? 'premium' : 'win');
             w.shards(center, 160, rampGold, speed: 1200);
             w.burst(center, 260, lv == 4 ? rampRainbow : rampGold, speed: 1200);
             w.shock(center, Colors.white, r: 900);
             w.ringSlash(center, w.size.width * 0.5, Colors.amber);
+          }
+          if (celebT < 0) {
+            // while zooming: sparkles swirl around the giant digit
+            if (every(0.05)) {
+              w.twinkle(
+                Rect.fromCircle(center: center, radius: 170),
+                2,
+                rampGold,
+              );
+            }
+            break;
           }
           if (every(0.3)) {
             w.firework(
@@ -565,7 +619,7 @@ class _PachiGachaState extends State<PachiGacha>
     final p = switch (phase) {
       Phase.climax => 0.05 + lv * 0.025,
       Phase.reach when lv >= 2 => 0.03,
-      Phase.result when win && pt < 0.8 => 0.3,
+      Phase.result when win && celebT >= 0 && celebT < 0.8 => 0.3,
       _ => 0.0,
     };
     return rnd.nextDouble() < p;
@@ -573,6 +627,7 @@ class _PachiGachaState extends State<PachiGacha>
 
   Color? get flash {
     if (smashAge < 0.017) return Colors.white;
+    if (clock - kachiAt < 0.034) return Colors.white.withValues(alpha: 0.55);
     if (smashAge > 0.06 && smashAge < 0.11) {
       return (win && phase == Phase.result ? Colors.amber : level.color)
           .withValues(alpha: 0.7);
@@ -580,7 +635,7 @@ class _PachiGachaState extends State<PachiGacha>
     final p = switch (phase) {
       Phase.spin => 0.02 * lv,
       Phase.climax => 0.18 + lv * 0.04,
-      Phase.result when win => pt < 0.8 ? 0.3 : 0.02,
+      Phase.result when win && celebT >= 0 => celebT < 0.8 ? 0.3 : 0.02,
       _ => 0.0,
     };
     if (rnd.nextDouble() >= p) return null;
@@ -595,10 +650,11 @@ class _PachiGachaState extends State<PachiGacha>
 
   Offset get shake {
     var a = max(0.0, 26 * (1 - smashAge / 0.45));
+    a += max(0.0, 14 * (1 - (clock - kachiAt) / 0.25));
     a += switch (phase) {
       Phase.climax => 5.0 + lv * 3,
       Phase.reach when lv >= 2 => 2.0,
-      Phase.result when win && pt < 1 => 10.0,
+      Phase.result when win && celebT >= 0 && celebT < 1 => 10.0,
       _ => 0.0,
     };
     return Offset(rr(-a, a), rr(-a, a));
@@ -847,17 +903,108 @@ class _PachiGachaState extends State<PachiGacha>
         if (!frozen || pt > 1.4)
           CustomPaint(painter: FxPainter(world, frameTick)),
         Align(alignment: const Alignment(0, -0.5), child: _headline()),
-        if (phase == Phase.result && pt > 0.3) _resultCard(),
-        if (winning && pt > 0.9)
+        if (winning && celebT < 0) _zoomDigits(),
+        if (phase == Phase.result && rt > 0.3) _resultCard(),
+        if (winning && rt > 0.9)
           Align(alignment: const Alignment(0.78, 0.62), child: _hanko()),
         if (flash case final f?) ColoredBox(color: f),
       ],
     );
   }
 
+  /// Center of reel [i] in scene coordinates. Mirrors the layout in
+  /// [_reels]: a 156px-tall row placed at Alignment(0, 0.25), reels 126px
+  /// wide + 5px margin on each side (136px apart).
+  Offset _slotPos(int i, Size s) =>
+      Offset(s.width / 2 + (i - 1) * 136, (s.height - 156) / 2 * 1.25 + 78);
+
+  /// The giant spinning digit of the current zoom turn.
+  Widget _zoomDigits() {
+    return LayoutBuilder(
+      builder: (context, c) {
+        final size = c.biggest;
+        final center = Offset(size.width / 2, size.height * 0.42);
+        final k = zoomEnd.indexWhere((e) => pt < e);
+        if (k < 0 || pt < zoomStart[k]) return const SizedBox();
+        final i = zoomOrder[k];
+        final local = pt - zoomStart[k];
+        final hold = zoomEnd[k] - zoomStart[k] - snapDur;
+        final big = k == 2 ? 4.6 : 3.8; // the last one is the biggest
+
+        double scale, ry;
+        Offset pos;
+        if (local < hold) {
+          // rush in from far away (tiny → huge, with overshoot) ...
+          scale =
+              big * Curves.easeOutBack.transform((local / 0.16).clamp(0, 1));
+          // ... while spinning fast and slowing down to face front
+          ry = pow(1 - local / hold, 2) * pi * (k == 2 ? 8 : 5);
+          pos = center;
+        } else {
+          // snap: accelerate back down to reel size and into the slot
+          final q = Curves.easeInCubic.transform((local - hold) / snapDur);
+          scale = big + (1 - big) * q;
+          ry = 0;
+          pos = Offset.lerp(center, _slotPos(i, size), q)!;
+        }
+        final skin = lv == 4 ? Skin.rainbow : Skin.gold;
+        Widget digit(double dry, double opacity) => Opacity(
+          opacity: opacity,
+          child: Text3D(
+            '${finalReels[i]}',
+            size: 104,
+            skin: skin,
+            hue: (clock * 300) % 360,
+            ry: ry + dry,
+            rx: 0.15,
+          ),
+        );
+        return Stack(
+          children: [
+            // dim the world so the digit pops
+            ColoredBox(
+              color: Colors.black.withValues(
+                alpha: 0.45 * (1 - (local - hold).clamp(0, 1)),
+              ),
+              child: const SizedBox.expand(),
+            ),
+            Positioned(
+              left: pos.dx - 150,
+              top: pos.dy - 150,
+              width: 300,
+              height: 300,
+              child: Transform.scale(
+                scale: scale,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    // halo behind the digit
+                    Container(
+                      width: 150,
+                      height: 150,
+                      decoration: const BoxDecoration(
+                        shape: BoxShape.circle,
+                        gradient: RadialGradient(
+                          colors: [Color(0xCCFFE080), Color(0x00FFA000)],
+                        ),
+                      ),
+                    ),
+                    // afterimages trailing the spin
+                    if (local < hold) ...[digit(0.5, 0.15), digit(0.25, 0.3)],
+                    digit(0, 1),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   /// The prize card flips in (3D Y-rotation) and lands bottom-left.
   Widget _resultCard() {
-    final p = Curves.easeOutBack.transform(((pt - 0.3) / 0.5).clamp(0, 1));
+    final p = Curves.easeOutBack.transform(((rt - 0.3) / 0.5).clamp(0, 1));
     return Align(
       alignment: const Alignment(-0.75, 0.82),
       child: Transform(
@@ -907,7 +1054,7 @@ class _PachiGachaState extends State<PachiGacha>
 
   /// 確定 seal stamp: slams down from huge, red ink, slightly crooked.
   Widget _hanko() {
-    final p = Curves.easeOutBack.transform(((pt - 0.9) / 0.15).clamp(0, 1));
+    final p = Curves.easeOutBack.transform(((rt - 0.9) / 0.15).clamp(0, 1));
     return Transform.rotate(
       angle: -0.25,
       child: Transform.scale(
@@ -1069,9 +1216,11 @@ class _PachiGachaState extends State<PachiGacha>
             ),
           );
         }
-        final p = Curves.easeOutBack.transform((pt / 0.9).clamp(0, 1));
+        if (celebT < 0) return const SizedBox();
+        final t = celebT;
+        final p = Curves.easeOutBack.transform((t / 0.9).clamp(0, 1));
         return Transform.scale(
-          scale: 0.2 + 0.8 * p + 0.05 * sin(pt * 12),
+          scale: 0.2 + 0.8 * p + 0.05 * sin(t * 12),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -1082,15 +1231,15 @@ class _PachiGachaState extends State<PachiGacha>
                   font: 'Boku',
                   skin: Skin.rainbow,
                   hue: hue,
-                  ry: sin(pt * 2) * 0.4,
+                  ry: sin(t * 2) * 0.4,
                 ),
               Text3D(
                 '大当り',
                 size: 110,
                 skin: lv == 4 ? Skin.rainbow : Skin.gold,
                 hue: hue,
-                ry: (1 - p) * pi * 4 + sin(pt * 2.2) * 0.45,
-                rx: sin(pt * 1.7) * 0.2,
+                ry: (1 - p) * pi * 4 + sin(t * 2.2) * 0.45,
+                rx: sin(t * 1.7) * 0.2,
                 depth: 34,
               ),
               Text3D(
@@ -1098,7 +1247,7 @@ class _PachiGachaState extends State<PachiGacha>
                 size: 60,
                 font: 'Reggae',
                 skin: Skin.chrome,
-                ry: -sin(pt * 2.2) * 0.5,
+                ry: -sin(t * 2.2) * 0.5,
                 rx: 0.2,
               ),
             ],
@@ -1130,6 +1279,10 @@ class _PachiGachaState extends State<PachiGacha>
                         phase == Phase.push) &&
                     i == 1);
             final digit = reels[i];
+            final snapAt = zoomEnd[zoomOrder.indexOf(i)];
+            if (winning && pt < snapAt) {
+              return _reelBox(const SizedBox());
+            }
             final skin = winning
                 ? (lv == 4 ? Skin.rainbow : Skin.gold)
                 : (digit == 7 ? Skin.blood : Skin.chrome);
@@ -1142,7 +1295,7 @@ class _PachiGachaState extends State<PachiGacha>
               // then rest facing front (continuous spinning shows mirrored
               // digits half the time).
               ry: winning
-                  ? _flip(pt - i * 0.15)
+                  ? _flip(celebT - i * 0.15)
                   : (moving ? 0 : sin(clock * 2 + i) * 0.25),
               rx: 0.15,
             );
@@ -1152,41 +1305,42 @@ class _PachiGachaState extends State<PachiGacha>
                 child: num,
               );
             }
-            return Container(
-              width: 126,
-              height: 156,
-              margin: const EdgeInsets.symmetric(horizontal: 5),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(14),
-                gradient: const LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [
-                    Color(0xEE101020),
-                    Color(0xCC303050),
-                    Color(0xEE101020),
-                  ],
-                ),
-                border: Border.all(
-                  color: winning ? Colors.amber : level.color,
-                  width: 4,
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: (winning ? Colors.amber : level.color).withValues(
-                      alpha: 0.8,
-                    ),
-                    blurRadius: 18,
-                  ),
-                ],
-              ),
-              alignment: Alignment.center,
-              child: num,
-            );
+            if (winning) {
+              // カチッ: a quick damped wobble right after landing
+              final dt = pt - snapAt;
+              num = Transform.scale(
+                scale: 1 + 0.3 * exp(-dt * 18) * cos(dt * 55),
+                child: num,
+              );
+            }
+            return _reelBox(num);
           }(),
       ],
     );
   }
+
+  Widget _reelBox(Widget num) => Container(
+    width: 126,
+    height: 156,
+    margin: const EdgeInsets.symmetric(horizontal: 5),
+    decoration: BoxDecoration(
+      borderRadius: BorderRadius.circular(14),
+      gradient: const LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [Color(0xEE101020), Color(0xCC303050), Color(0xEE101020)],
+      ),
+      border: Border.all(color: winning ? Colors.amber : level.color, width: 4),
+      boxShadow: [
+        BoxShadow(
+          color: (winning ? Colors.amber : level.color).withValues(alpha: 0.8),
+          blurRadius: 18,
+        ),
+      ],
+    ),
+    alignment: Alignment.center,
+    child: num,
+  );
 
   Widget _hud() {
     final showMeter =

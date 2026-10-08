@@ -227,8 +227,11 @@ class Text3D extends StatelessWidget {
           );
         }(),
     ];
-    final front = layer(
-      0,
+    // The face (outline + rim + metallic gradient). Used for the front at
+    // z=0 and again for the back at z=d, so a turned-around letter shows a
+    // proper (mirrored) face like the back of a coin, not the dark core.
+    Widget face(double z) => layer(
+      z,
       Stack(
         alignment: Alignment.center,
         children: [
@@ -265,10 +268,11 @@ class Text3D extends StatelessWidget {
           ),
         if (facing >= 0) ...[
           ...sides,
-          front,
+          face(0),
         ] else ...[
-          front,
+          face(0),
           ...sides.reversed,
+          face(d),
         ],
       ],
     );
