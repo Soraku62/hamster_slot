@@ -22,6 +22,18 @@ flutter run -d chrome   # ブラウザ
 flutter run -d macos    # Mac アプリ
 ```
 
+## 公開（GitHub Pages）
+
+`main` ブランチにソース、`gh-pages` ブランチにビルド済みの Web 版を置く
+「Deploy from a branch」方式です。
+
+```sh
+./tools/deploy_pages.sh   # ビルドして gh-pages に push
+```
+
+GitHub の Settings → Pages → Source を「Deploy from a branch」、
+Branch を `gh-pages` / `(root)` にしておきます。
+
 ## ファイル構成
 
 | ファイル | 内容 |
@@ -33,6 +45,7 @@ flutter run -d macos    # Mac アプリ
 | `lib/deco.dart` | 後光・集中線・流れる文字帯・カットインなど |
 | `lib/cards.dart` | 景品カードの絵柄と PNG 書き出し |
 | `tools/synth_sfx.py` | 効果音を合成する Python スクリプト |
+| `tools/deploy_pages.sh` | Web 版をビルドして gh-pages に公開 |
 
 ## 素材について
 
