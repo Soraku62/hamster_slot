@@ -588,19 +588,28 @@ class FxPainter extends CustomPainter {
       canvas.drawAtlas(atlas, tr, rects, cols, BlendMode.modulate, null, add);
     }
 
-    // --- sparks: short streaks along velocity
-    final sp = Paint()
-      ..blendMode = BlendMode.plus
-      ..strokeCap = StrokeCap.round;
+    // --- sparks: short streaks along velocity. Each streak is a thin quad
+    // (2 triangles) and ALL of them go to the GPU in one drawVertices call,
+    // instead of one drawLine call per spark.
+    final sPos = <Offset>[], sCol = <Color>[];
     for (final p in w.ps) {
       if (p.kind != PKind.spark) continue;
-      sp
-        ..color = evalRamp(p.ramp, p.t)
-        ..strokeWidth = p.size;
-      canvas.drawLine(
-        Offset(p.x, p.y),
-        Offset(p.x - p.vx * 0.03, p.y - p.vy * 0.03),
-        sp,
+      final a = Offset(p.x, p.y);
+      final b = Offset(p.x - p.vx * 0.03, p.y - p.vy * 0.03);
+      final d = b - a;
+      final len = d.distance;
+      if (len < 0.01) continue;
+      final n = Offset(-d.dy, d.dx) / len * (p.size / 2);
+      final c = evalRamp(p.ramp, p.t);
+      final tail = c.withValues(alpha: 0); // fade out toward the tail
+      sPos.addAll([a + n, a - n, b + n, b + n, a - n, b - n]);
+      sCol.addAll([c, c, tail, tail, c, tail]);
+    }
+    if (sPos.isNotEmpty) {
+      canvas.drawVertices(
+        ui.Vertices(ui.VertexMode.triangles, sPos, colors: sCol),
+        BlendMode.dst,
+        add,
       );
     }
 

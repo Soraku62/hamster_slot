@@ -13,7 +13,11 @@ class MainFlutterWindow: NSWindow {
 
     super.awakeFromNib()
     DispatchQueue.main.async {
-      self.setContentSize(NSSize(width: 480, height: 860))
+      // WIN_W / WIN_H env vars override the size (used to test landscape).
+      let env = ProcessInfo.processInfo.environment
+      let w = Double(env["WIN_W"] ?? "") ?? 480
+      let h = Double(env["WIN_H"] ?? "") ?? 860
+      self.setContentSize(NSSize(width: w, height: h))
       self.center()
     }
   }

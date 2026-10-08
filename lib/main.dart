@@ -188,6 +188,7 @@ class _PachiGachaState extends State<PachiGacha>
   /// Time base for result-screen animations (win waits for the zoom).
   double get rt => win ? celebT : pt;
 
+  final _ui = <double>[], _raster = <double>[];
   // auto-shot state
   double shotStart = -1;
   int shotIdx = 0;
@@ -199,6 +200,16 @@ class _PachiGachaState extends State<PachiGacha>
       holds.add(_newHold());
     }
     ticker = createTicker(_tick)..start();
+    if (shotLv != null) {
+      // perf probe: frame costs during the jackpot zoom + first second after
+      SchedulerBinding.instance.addTimingsCallback((ts) {
+        if (!winning || pt > 2.9) return;
+        for (final t in ts) {
+          _ui.add(t.buildDuration.inMicroseconds / 1000);
+          _raster.add(t.rasterDuration.inMicroseconds / 1000);
+        }
+      });
+    }
     if (shotLv != null) {
       WidgetsBinding.instance.addPostFrameCallback(
         (_) => Future.delayed(const Duration(seconds: 2), () {
@@ -713,7 +724,18 @@ class _PachiGachaState extends State<PachiGacha>
         '${dir.path}/lv${lv}_w${win ? 1 : 0}_${i.toString().padLeft(2, '0')}_${phase.name}.png';
     File(name).writeAsBytesSync(data!.buffer.asUint8List());
     debugPrint('SHOT $name');
-    if (shotIdx >= shotTimes.length) exit(0);
+    if (shotIdx >= shotTimes.length) {
+      String st(List<double> v) {
+        if (v.isEmpty) return 'n/a';
+        v.sort();
+        final avg = v.reduce((a, b) => a + b) / v.length;
+        return 'avg ${avg.toStringAsFixed(2)}ms p90 ${v[(v.length * 0.9).floor()].toStringAsFixed(2)}ms max ${v.last.toStringAsFixed(2)}ms n=${v.length}';
+      }
+
+      debugPrint('PERF ui: ${st(_ui)}');
+      debugPrint('PERF raster: ${st(_raster)}');
+      exit(0);
+    }
   }
 
   // ---- build ---------------------------------------------------------------
@@ -741,12 +763,6 @@ class _PachiGachaState extends State<PachiGacha>
     );
   }
 
-  static const _invert = ColorFilter.matrix([
-    -1, 0, 0, 0, 255, //
-    0, -1, 0, 0, 255,
-    0, 0, -1, 0, 255,
-    0, 0, 0, 1, 0,
-  ]);
   static const _grey = ColorFilter.matrix([
     0.3, 0.5, 0.1, 0, 0, //
     0.3, 0.5, 0.1, 0, 0,
@@ -787,7 +803,16 @@ class _PachiGachaState extends State<PachiGacha>
     return ClipRect(
       child: Transform.translate(
         offset: shake,
-        child: negative ? ColorFiltered(colorFilter: _invert, child: s) : s,
+        // ネガ: a white rect in "difference" blend mode = 255 - color, the
+        // same as an invert filter but without copying the whole screen
+        // into an offscreen layer first.
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            s,
+            if (negative) CustomPaint(painter: _InvertPainter()),
+          ],
+        ),
       ),
     );
   }
@@ -961,6 +986,25 @@ class _PachiGachaState extends State<PachiGacha>
         if (winning && rt > 0.9)
           Align(alignment: const Alignment(0.78, 0.62), child: _hanko()),
         if (flash case final f?) ColoredBox(color: f),
+        // Pre-bake the winning digit's glyph images while the reels still
+        // spin, so the zoom's first frame doesn't stall creating them.
+        if (win && phase.index >= Phase.reach.index && phase != Phase.result)
+          LayoutBuilder(
+            builder: (context, c) => Offstage(
+              child: Column(
+                children: [
+                  for (final h in lv == 4 ? [0, 60, 120, 180, 240, 300] : [0])
+                    Text3D(
+                      '${finalReels[1]}',
+                      size: 104,
+                      skin: lv == 4 ? Skin.rainbow : Skin.gold,
+                      hue: h.toDouble(),
+                      res: 3.3 * _zk(c.biggest),
+                    ),
+                ],
+              ),
+            ),
+          ),
       ],
     );
   }
@@ -971,10 +1015,16 @@ class _PachiGachaState extends State<PachiGacha>
   Offset _slotPos(int i, Size s) =>
       Offset(s.width / 2 + (i - 1) * 136, (s.height - 156) / 2 * 1.25 + 78);
 
+  /// Size unit for the giant digits, from the SMALLER screen dimension
+  /// (1.0 = the 480x680 portrait design). Using width alone pushed the
+  /// digits apart on landscape screens; tying both their size and spacing
+  /// to one unit keeps the group's shape the same on any aspect ratio.
+  double _zk(Size s) => min(s.width / 480, s.height / 680);
+
   /// Where digit [i] floats during the charge: a fanned row at screen center.
   Offset _floatPos(int i, Size s) => Offset(
-    s.width / 2 + (i - 1) * s.width * 0.52,
-    s.height * 0.42 + (i == 1 ? -12 : 12),
+    s.width / 2 + (i - 1) * 250 * _zk(s),
+    s.height * 0.42 + (i == 1 ? -12 : 12) * _zk(s),
   );
 
   /// Depth vibration of digit [i]: scale wobble whose speed and size grow
@@ -1000,34 +1050,33 @@ class _PachiGachaState extends State<PachiGacha>
         final pulse = 0.5 + 0.5 * sin(2 * pi * chargeHz * (pt - zAppear));
         final skin = lv == 4 ? Skin.rainbow : Skin.gold;
         final hue = (clock * 300) % 360;
+        final zk = _zk(size);
 
-        Widget digit(
-          int i,
-          double scale,
-          Offset pos,
-          double opacity,
-        ) => Positioned(
-          left: pos.dx - 150,
-          top: pos.dy - 150,
-          width: 300,
-          height: 300,
-          child: Opacity(
-            opacity: opacity,
-            child: Transform.scale(
-              scale: scale,
-              child: Text3D(
-                '${finalReels[i]}',
-                size: 104,
-                skin: skin,
-                hue: hue,
-                // side digits turn inward (fan); a full spin while appearing
-                ry: (1 - i) * 0.45 * (1 - snapQ) + (1 - appear) * pi * 2,
-                rx: 0.15 + (charging ? sin(pt * 37 + i) * 0.07 * chargeP : 0),
-                rz: charging ? sin(pt * 29 + i * 2) * 0.05 * chargeP : 0,
+        Widget digit(int i, double scale, Offset pos, double opacity) =>
+            Positioned(
+              left: pos.dx - 150,
+              top: pos.dy - 150,
+              width: 300,
+              height: 300,
+              child: Transform.scale(
+                scale: scale,
+                child: Text3D(
+                  '${finalReels[i]}',
+                  size: 104,
+                  skin: skin,
+                  hue: hue,
+                  // opacity is applied per image (no Opacity widget → no
+                  // offscreen layer), and the glyph images are rasterized
+                  // for the 3.3x zoom so they stay sharp
+                  opacity: opacity,
+                  res: 3.3 * zk,
+                  // side digits turn inward (fan); a full spin while appearing
+                  ry: (1 - i) * 0.45 * (1 - snapQ) + (1 - appear) * pi * 2,
+                  rx: 0.15 + (charging ? sin(pt * 37 + i) * 0.07 * chargeP : 0),
+                  rz: charging ? sin(pt * 29 + i * 2) * 0.05 * chargeP : 0,
+                ),
               ),
-            ),
-          ),
-        );
+            );
 
         final children = <Widget>[
           Positioned.fill(
@@ -1044,7 +1093,7 @@ class _PachiGachaState extends State<PachiGacha>
         ];
         for (final i in [0, 2, 1]) {
           // center digit drawn last = in front
-          final s0 = (i == 1 ? 3.3 : 2.7) * appear * (1 + _vib(i));
+          final s0 = (i == 1 ? 3.3 : 2.7) * zk * appear * (1 + _vib(i));
           final p0 = _floatPos(i, size);
           final slot = _slotPos(i, size);
           // zoom-blur: fading copies left behind along the path while snapping
@@ -1658,4 +1707,17 @@ class _HalfClipper extends CustomClipper<Path> {
 
   @override
   bool shouldReclip(_) => true;
+}
+
+class _InvertPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) => canvas.drawRect(
+    Offset.zero & size,
+    Paint()
+      ..blendMode = BlendMode.difference
+      ..color = Colors.white,
+  );
+
+  @override
+  bool shouldRepaint(_) => false;
 }

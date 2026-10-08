@@ -331,22 +331,28 @@ class ChargeLightPainter extends CustomPainter {
         rays,
       );
     }
-    // lens-flare streak across the row
+    // lens-flare streak across the row: an ellipse with a radial gradient
+    // (circle squashed vertically) — same soft look as a blur, but a blur
+    // filter over a 2x-screen-wide rect cost far more every frame.
     final h = (8 + 30 * pulse) * (0.4 + charge);
-    final streak = Rect.fromCenter(center: c, width: s.width * 2, height: h);
-    canvas.drawRect(
-      streak,
+    canvas.save();
+    canvas.translate(c.dx, c.dy);
+    canvas.scale(1, h * 1.6 / s.width);
+    canvas.drawCircle(
+      Offset.zero,
+      s.width,
       Paint()
         ..blendMode = BlendMode.plus
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, h * 0.4)
-        ..shader = LinearGradient(
+        ..shader = RadialGradient(
           colors: [
-            Colors.transparent,
             Colors.white.withValues(alpha: 0.9 * fade),
+            Colors.white.withValues(alpha: 0.35 * fade),
             Colors.transparent,
           ],
-        ).createShader(streak),
+          stops: const [0, 0.3, 1],
+        ).createShader(Rect.fromCircle(center: Offset.zero, radius: s.width)),
     );
+    canvas.restore();
   }
 
   @override
